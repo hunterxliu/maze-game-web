@@ -1,0 +1,756 @@
+import json
+import os
+
+from flask import Flask, jsonify, render_template_string, request
+
+app = Flask(__name__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LEADERBOARD_PATH = os.path.join(BASE_DIR, "leaderboard.json")
+
+
+def load_leaderboard():
+    if not os.path.exists(LEADERBOARD_PATH):
+        return []
+    try:
+        with open(LEADERBOARD_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def save_leaderboard(entries):
+    with open(LEADERBOARD_PATH, "w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False, indent=2)
+
+
+HTML = """
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>迷宫挑战</title>
+  <style>
+    :root {
+      --bg1: #070d1b;
+      --bg2: #111827;
+      --panel: rgba(17, 24, 39, 0.9);
+      --panel-border: rgba(148, 163, 184, 0.2);
+      --wall: #1f2937;
+      --path: #d1fae5;
+      --player: #fbbf24;
+      --goal: #34d399;
+      --hint: #f472b6;
+      --text: #e5e7eb;
+      --accent: #60a5fa;
+      --shadow: rgba(0, 0, 0, 0.35);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at top, #172554, var(--bg1) 35%, var(--bg2));
+      color: var(--text);
+      font-family: Arial, sans-serif;
+      padding: 24px;
+    }
+
+    .game-shell {
+      width: min(96vw, 1100px);
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 24px;
+      padding: 24px;
+      box-shadow: 0 30px 70px var(--shadow);
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.9rem, 2vw, 2.8rem);
+      letter-spacing: 1px;
+    }
+
+    .stats {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      background: rgba(96, 165, 250, 0.12);
+      border: 1px solid rgba(96, 165, 250, 0.28);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-weight: 700;
+    }
+
+    .game-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 310px;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .maze-panel {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 18px;
+      padding: 18px;
+      min-height: 560px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .maze {
+      display: grid;
+      gap: 3px;
+      padding: 12px;
+      border-radius: 14px;
+      background: rgba(148, 163, 184, 0.12);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+    }
+
+    .cell {
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.7rem;
+      font-weight: 900;
+      user-select: none;
+      transition: all 0.12s ease;
+    }
+
+    .wall { background: var(--wall); }
+    .path { background: var(--path); }
+    .player { background: var(--player); color: #111827; }
+    .goal { background: var(--goal); color: #062c1b; }
+    .hint { background: var(--hint); box-shadow: 0 0 14px rgba(244, 114, 182, 0.5); }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .card {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 16px;
+      padding: 16px;
+    }
+
+    h2 { margin: 0 0 12px; font-size: 1.1rem; }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    button {
+      background: linear-gradient(135deg, #60a5fa, #2563eb);
+      color: white;
+      border: none;
+      border-radius: 12px;
+      padding: 10px 16px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.12s ease, filter 0.12s ease;
+    }
+
+    button:hover { transform: translateY(-1px); filter: brightness(1.08); }
+    button.secondary { background: linear-gradient(135deg, #34d399, #10b981); }
+    button.warn { background: linear-gradient(135deg, #fbbf24, #f59e0b); color: #111827; }
+
+    .message {
+      min-height: 28px;
+      margin-top: 14px;
+      font-weight: 700;
+      color: #dbeafe;
+    }
+
+    .leaderboard {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .leaderboard li {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      background: rgba(148, 163, 184, 0.08);
+      border: 1px solid rgba(148, 163, 184, 0.1);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 0.94rem;
+    }
+
+    .difficulty-buttons {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    .difficulty-btn {
+      background: rgba(148, 163, 184, 0.08);
+      color: var(--text);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      padding: 8px 10px;
+      border-radius: 10px;
+      font-weight: 700;
+    }
+
+    .difficulty-btn.active {
+      background: linear-gradient(135deg, #fbbf24, #f59e0b);
+      color: #111827;
+      border-color: rgba(251, 191, 36, 0.5);
+    }
+
+    .start-screen {
+      position: fixed;
+      inset: 0;
+      background: rgba(11, 16, 32, 0.82);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 3;
+      backdrop-filter: blur(6px);
+    }
+
+    .start-panel {
+      width: min(92vw, 560px);
+      background: rgba(17, 24, 39, 0.95);
+      border-radius: 22px;
+      padding: 28px 24px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      box-shadow: 0 25px 60px rgba(0,0,0,0.4);
+      text-align: center;
+    }
+
+    .start-panel h2 {
+      font-size: clamp(2rem, 4vw, 2.7rem);
+      margin-bottom: 8px;
+    }
+
+    .start-panel p {
+      margin: 10px 0 18px;
+      color: #dbeafe;
+      line-height: 1.6;
+    }
+
+    .name-input {
+      width: 100%;
+      margin: 12px 0 18px;
+      background: rgba(15, 23, 42, 0.8);
+      color: var(--text);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 1rem;
+    }
+
+    .mini-map {
+      display: grid;
+      gap: 2px;
+      margin-top: 12px;
+      background: rgba(148, 163, 184, 0.14);
+      padding: 6px;
+      border-radius: 10px;
+    }
+
+    .mini-cell {
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+      background: rgba(255,255,255,0.1);
+    }
+
+    .mini-wall { background: #374151; }
+    .mini-path { background: #d1fae5; }
+    .mini-player { background: #fbbf24; }
+    .mini-goal { background: #34d399; }
+
+    .hidden { display: none !important; }
+
+    @media (max-width: 760px) {
+      .game-layout { grid-template-columns: 1fr; }
+      .maze-panel { min-height: 420px; }
+      .cell { width: 22px; height: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="startScreen" class="start-screen">
+    <div class="start-panel">
+      <h2>迷宫挑战</h2>
+      <p>逃出迷宫，挑战更高分。每局都生成新的随机地图，并保留排行榜记录。</p>
+
+      <input id="playerName" class="name-input" type="text" maxlength="12" value="玩家" placeholder="请输入你的名字" />
+
+      <div>
+        <h3>难度选择</h3>
+        <div class="difficulty-buttons">
+          <button class="difficulty-btn active" data-difficulty="easy">简单</button>
+          <button class="difficulty-btn" data-difficulty="normal">普通</button>
+          <button class="difficulty-btn" data-difficulty="hard">困难</button>
+        </div>
+      </div>
+
+      <div class="controls" style="justify-content:center; margin-top:18px;">
+        <button id="startGameBtn" class="secondary">开始游戏</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="game-shell">
+    <div class="topbar">
+      <h1>迷宫挑战</h1>
+      <div class="stats">
+        <div class="badge">难度：<span id="difficultyLabel">简单</span></div>
+        <div class="badge">关卡：<span id="levelLabel">1</span></div>
+        <div class="badge">时间：<span id="timer">0.0s</span></div>
+        <div class="badge">分数：<span id="score">0</span></div>
+        <div class="badge">步数：<span id="moves">0</span></div>
+      </div>
+    </div>
+
+    <div class="game-layout">
+      <div class="maze-panel">
+        <div id="maze" class="maze" aria-label="maze board"></div>
+      </div>
+
+      <div class="sidebar">
+        <div class="card">
+          <h2>控制</h2>
+          <div>W / A / S / D 或方向键</div>
+          <div class="controls">
+            <button id="hintBtn" class="warn">提示</button>
+            <button id="newGameBtn">新游戏</button>
+            <button id="restartBtn" class="secondary">重试</button>
+          </div>
+          <div id="message" class="message">准备开始。</div>
+        </div>
+
+        <div class="card">
+          <h2>地图缩略图</h2>
+          <div id="miniMap" class="mini-map" aria-label="mini map"></div>
+        </div>
+
+        <div class="card">
+          <h2>排行榜</h2>
+          <ul id="leaderboard" class="leaderboard"></ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const LEVELS = {
+      easy: { size: 9, label: '简单' },
+      normal: { size: 11, label: '普通' },
+      hard: { size: 13, label: '困难' }
+    };
+
+    const startScreen = document.getElementById('startScreen');
+    const startGameBtn = document.getElementById('startGameBtn');
+    const playerNameInput = document.getElementById('playerName');
+    const difficultyButtons = [...document.querySelectorAll('.difficulty-btn')];
+    const difficultyLabel = document.getElementById('difficultyLabel');
+    const levelLabel = document.getElementById('levelLabel');
+    const mazeEl = document.getElementById('maze');
+    const timerEl = document.getElementById('timer');
+    const scoreEl = document.getElementById('score');
+    const movesEl = document.getElementById('moves');
+    const messageEl = document.getElementById('message');
+    const newGameBtn = document.getElementById('newGameBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    const hintBtn = document.getElementById('hintBtn');
+    const leaderboardEl = document.getElementById('leaderboard');
+    const miniMapEl = document.getElementById('miniMap');
+
+    let currentDifficulty = 'easy';
+    let levelIndex = 1;
+    let maze = [];
+    let player = { x: 0, y: 0 };
+    let goal = { x: 0, y: 0 };
+    let moves = 0;
+    let startTime = 0;
+    let timerId = null;
+    let finished = false;
+    let audioCtx = null;
+    let hintPath = [];
+
+    function beep(frequency, duration, type = 'sine', gainValue = 0.04) {
+      const AudioCtor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtor) return;
+      if (!audioCtx) audioCtx = new AudioCtor();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      oscillator.type = type;
+      oscillator.frequency.value = frequency;
+      gainNode.gain.value = gainValue;
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      oscillator.start();
+      oscillator.stop(audioCtx.currentTime + duration);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+    }
+
+    function getLeaderboard() {
+      return fetch('/api/leaderboard')
+        .then(res => res.json())
+        .catch(() => []);
+    }
+
+    function renderLeaderboard(entries) {
+      leaderboardEl.innerHTML = '';
+      if (!entries || !entries.length) {
+        leaderboardEl.innerHTML = '<li><span>暂无记录</span><span>—</span></li>';
+        return;
+      }
+      entries.slice(0, 5).forEach((entry, index) => {
+        const li = document.createElement('li');
+        li.innerHTML = `<span>${index + 1}. ${entry.name}</span><span>${entry.score}分</span>`;
+        leaderboardEl.appendChild(li);
+      });
+    }
+
+    function refreshLeaderboard() {
+      getLeaderboard().then(renderLeaderboard);
+    }
+
+    function recordScore(score) {
+      const payload = {
+        name: (playerNameInput.value || '玩家').trim() || '玩家',
+        score,
+        difficulty: difficultyLabel.textContent,
+        level: Number(levelLabel.textContent || 1),
+        moves,
+        seconds: (Date.now() - startTime) / 1000
+      };
+      fetch('/api/score', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(() => refreshLeaderboard());
+    }
+
+    function generateMaze(size) {
+      const cells = Array.from({ length: size }, () => Array(size).fill(1));
+      const stack = [{ x: 0, y: 0 }];
+      cells[0][0] = 0;
+
+      while (stack.length > 0) {
+        const current = stack[stack.length - 1];
+        const directions = [[0, 2], [2, 0], [0, -2], [-2, 0]].sort(() => Math.random() - 0.5);
+        let moved = false;
+
+        for (const [dx, dy] of directions) {
+          const nx = current.x + dx;
+          const ny = current.y + dy;
+          if (nx >= 0 && nx < size && ny >= 0 && ny < size && cells[ny][nx] === 1) {
+            cells[ny][nx] = 0;
+            cells[current.y + dy / 2][current.x + dx / 2] = 0;
+            stack.push({ x: nx, y: ny });
+            moved = true;
+            break;
+          }
+        }
+
+        if (!moved) stack.pop();
+      }
+
+      cells[0][0] = 0;
+      cells[size - 1][size - 1] = 0;
+      return cells;
+    }
+
+    function findPath(startX, startY, endX, endY) {
+      const queue = [[startX, startY]];
+      const visited = new Set([`${startX},${startY}`]);
+      const previous = new Map();
+
+      while (queue.length) {
+        const [x, y] = queue.shift();
+        if (x === endX && y === endY) break;
+        const neighbors = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+        for (const [dx, dy] of neighbors) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx >= 0 && nx < maze.length && ny >= 0 && ny < maze.length && maze[ny][nx] === 0 && !visited.has(`${nx},${ny}`)) {
+            visited.add(`${nx},${ny}`);
+            previous.set(`${nx},${ny}`, [x, y]);
+            queue.push([nx, ny]);
+          }
+        }
+      }
+
+      const path = [];
+      let curX = endX;
+      let curY = endY;
+      while (curX !== startX || curY !== startY) {
+        path.push({ x: curX, y: curY });
+        const key = `${curX},${curY}`;
+        if (!previous.has(key)) break;
+        [curX, curY] = previous.get(key);
+      }
+      path.push({ x: startX, y: startY });
+      path.reverse();
+      return path;
+    }
+
+    function renderMiniMap() {
+      const size = maze.length;
+      miniMapEl.style.gridTemplateColumns = `repeat(${size}, 10px)`;
+      miniMapEl.innerHTML = '';
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          const cell = document.createElement('div');
+          const inHint = hintPath.some(p => p.x === x && p.y === y);
+          const isPlayer = player.x === x && player.y === y;
+          const isGoal = goal.x === x && goal.y === y;
+          cell.className = 'mini-cell ' + (maze[y][x] === 1 ? 'mini-wall' : 'mini-path');
+          if (isPlayer) cell.classList.add('mini-player');
+          if (isGoal) cell.classList.add('mini-goal');
+          if (inHint && !isPlayer && !isGoal) cell.classList.add('mini-goal');
+          miniMapEl.appendChild(cell);
+        }
+      }
+    }
+
+    function drawMaze() {
+      const size = maze.length;
+      mazeEl.style.gridTemplateColumns = `repeat(${size}, 28px)`;
+      mazeEl.innerHTML = '';
+
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          const cell = document.createElement('div');
+          const isWall = maze[y][x] === 1;
+          const isPlayer = player.x === x && player.y === y;
+          const isGoal = goal.x === x && goal.y === y;
+          const isHint = hintPath.some(p => p.x === x && p.y === y);
+
+          cell.className = 'cell ' + (isWall ? 'wall' : 'path');
+          if (isPlayer) cell.classList.add('player');
+          if (isGoal) cell.classList.add('goal');
+          if (isHint && !isPlayer && !isGoal) cell.classList.add('hint');
+          mazeEl.appendChild(cell);
+        }
+      }
+      renderMiniMap();
+    }
+
+    function updateStats() {
+      const elapsed = (Date.now() - startTime) / 1000;
+      timerEl.textContent = `${elapsed.toFixed(1)}s`;
+      const levelBonus = (levelIndex - 1) * 150;
+      const currentScore = Math.max(0, Math.round(2000 - elapsed * 20 - moves * 10 + levelBonus));
+      scoreEl.textContent = currentScore;
+      movesEl.textContent = moves;
+    }
+
+    function stopTimer() {
+      if (timerId) clearInterval(timerId);
+      timerId = null;
+    }
+
+    function startTimer() {
+      stopTimer();
+      startTime = Date.now();
+      timerId = setInterval(updateStats, 100);
+    }
+
+    function isWalkable(x, y) {
+      return x >= 0 && x < maze.length && y >= 0 && y < maze.length && maze[y][x] === 0;
+    }
+
+    function finishGame() {
+      finished = true;
+      stopTimer();
+      const elapsed = (Date.now() - startTime) / 1000;
+      const levelBonus = (levelIndex - 1) * 150;
+      const finalScore = Math.max(0, Math.round(2000 - elapsed * 20 - moves * 10 + levelBonus));
+      scoreEl.textContent = finalScore;
+      messageEl.textContent = `胜利！本关用时 ${elapsed.toFixed(1)} 秒，分数 ${finalScore}。`;
+      recordScore(finalScore);
+      beep(880, 0.18, 'triangle', 0.05);
+      setTimeout(() => beep(660, 0.2, 'triangle', 0.05), 120);
+      setTimeout(() => beep(990, 0.22, 'triangle', 0.05), 260);
+      setTimeout(() => {
+        if (levelIndex < 3) {
+          levelIndex += 1;
+          startGame(false);
+          messageEl.textContent = `恭喜通关，第 ${levelIndex} 关已开始！`;
+        } else {
+          messageEl.textContent = `全部关卡挑战完成，最终分数 ${finalScore}，已写入排行榜。`;
+        }
+      }, 1200);
+    }
+
+    function movePlayer(dx, dy) {
+      if (finished) return;
+      const nx = player.x + dx;
+      const ny = player.y + dy;
+
+      if (!isWalkable(nx, ny)) {
+        messageEl.textContent = '前方是墙，不能过去！';
+        beep(120, 0.08, 'square', 0.02);
+        return;
+      }
+
+      player.x = nx;
+      player.y = ny;
+      moves += 1;
+      hintPath = [];
+      beep(450, 0.06, 'sine', 0.03);
+      drawMaze();
+      updateStats();
+
+      if (player.x === goal.x && player.y === goal.y) {
+        finishGame();
+      } else {
+        messageEl.textContent = '继续前进，目标就在前方！';
+      }
+    }
+
+    function showHint() {
+      if (finished) return;
+      const path = findPath(player.x, player.y, goal.x, goal.y);
+      if (path.length <= 2) {
+        messageEl.textContent = '目标就在你附近，直接冲过去！';
+        return;
+      }
+      hintPath = path.slice(1, Math.min(path.length, 8));
+      drawMaze();
+      messageEl.textContent = '提示：路线已高亮，跟着它前进。';
+      beep(700, 0.1, 'triangle', 0.04);
+    }
+
+    function initDifficultyButtons() {
+      difficultyButtons.forEach(button => {
+        button.addEventListener('click', () => {
+          currentDifficulty = button.dataset.difficulty;
+          difficultyButtons.forEach(btn => btn.classList.toggle('active', btn === button));
+          difficultyLabel.textContent = LEVELS[currentDifficulty].label;
+        });
+      });
+    }
+
+    function startGame(resetLevel = true) {
+      if (resetLevel) {
+        levelIndex = 1;
+      }
+      const config = LEVELS[currentDifficulty];
+      const size = config.size + (levelIndex - 1) * 2;
+      maze = generateMaze(size);
+      player = { x: 0, y: 0 };
+      goal = { x: size - 1, y: size - 1 };
+      moves = 0;
+      finished = false;
+      hintPath = [];
+      levelLabel.textContent = String(levelIndex);
+      difficultyLabel.textContent = config.label;
+      messageEl.textContent = `第 ${levelIndex} 关已生成，开始冒险！`;
+      drawMaze();
+      updateStats();
+      startTimer();
+      startScreen.classList.add('hidden');
+      beep(440, 0.10, 'triangle', 0.04);
+    }
+
+    document.addEventListener('keydown', (event) => {
+      const key = event.key.toLowerCase();
+      if (key === 'w' || key === 'arrowup') movePlayer(0, -1);
+      else if (key === 's' || key === 'arrowdown') movePlayer(0, 1);
+      else if (key === 'a' || key === 'arrowleft') movePlayer(-1, 0);
+      else if (key === 'd' || key === 'arrowright') movePlayer(1, 0);
+    });
+
+    startGameBtn.addEventListener('click', () => startGame(true));
+    newGameBtn.addEventListener('click', () => {
+      startScreen.classList.remove('hidden');
+      stopTimer();
+      timerEl.textContent = '0.0s';
+      scoreEl.textContent = '0';
+      movesEl.textContent = '0';
+      messageEl.textContent = '已返回开始界面。';
+    });
+    restartBtn.addEventListener('click', () => startGame(false));
+    hintBtn.addEventListener('click', showHint);
+
+    initDifficultyButtons();
+    refreshLeaderboard();
+    difficultyLabel.textContent = LEVELS[currentDifficulty].label;
+    startScreen.classList.remove('hidden');
+  </script>
+</body>
+</html>
+"""
+
+
+@app.route("/")
+def index():
+    return render_template_string(HTML)
+
+
+@app.route("/api/leaderboard")
+def api_leaderboard():
+    return jsonify(load_leaderboard())
+
+
+@app.route("/api/score", methods=["POST"])
+def api_score():
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name", "玩家")).strip() or "玩家"
+    score = int(payload.get("score", 0))
+    difficulty = str(payload.get("difficulty", "简单"))
+    level = int(payload.get("level", 1))
+    moves = int(payload.get("moves", 0))
+    seconds = float(payload.get("seconds", 0.0))
+
+    entries = load_leaderboard()
+    entries.append({
+        "name": name,
+        "score": score,
+        "difficulty": difficulty,
+        "level": level,
+        "moves": moves,
+        "seconds": round(seconds, 1)
+    })
+    entries = sorted(entries, key=lambda x: x.get("score", 0), reverse=True)[:10]
+    save_leaderboard(entries)
+    return jsonify({"ok": True, "entries": entries})
+
+
+if __name__ == "__main__":
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host=host, port=port, debug=False)
+
+
